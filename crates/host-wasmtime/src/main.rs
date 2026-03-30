@@ -1,7 +1,10 @@
 use anyhow::Result;
 use clap::Parser;
 use std::path::PathBuf;
-use wasmtime::{Engine, Linker, Module, Store};
+use wasmtime::{Engine, Linker, Memory, Module, Store};
+
+mod terminal;
+use terminal::Terminal;
 
 #[derive(Parser, Debug)]
 #[command(name = "host-wasmtime")]
@@ -12,7 +15,9 @@ struct Cli {
     kernel: PathBuf,
 }
 
-struct HostState;
+struct HostState {
+    memory: Option<Memory>,
+}
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -26,13 +31,14 @@ fn main() -> Result<()> {
         "env",
         "mc_stdout_write",
         |mut caller: wasmtime::Caller<'_, HostState>, ptr: i32, len: i32| {
-            let memory = caller.get_export("memory").unwrap().into_memory().unwrap();
-            let data = memory.data(&caller);
-            let start = ptr as usize;
-            let end = start + len as usize;
-            let bytes = &data[start..end];
-            print!("{}", String::from_utf8_lossy(bytes));
-            std::io::Write::flush(&mut std::io::stdout()).unwrap();
+            if let Some(memory) = caller.data().memory {
+                let data = memory.data(&caller);
+                let start = ptr as usize;
+                let end = start + len as usize;
+                let bytes = &data[start..end];
+                print!("{}", String::from_utf8_lossy(bytes));
+                std::io::Write::flush(&mut std::io::stdout()).unwrap();
+            }
         },
     )?;
 
@@ -40,12 +46,13 @@ fn main() -> Result<()> {
         "env",
         "mc_stderr_write",
         |mut caller: wasmtime::Caller<'_, HostState>, ptr: i32, len: i32| {
-            let memory = caller.get_export("memory").unwrap().into_memory().unwrap();
-            let data = memory.data(&caller);
-            let start = ptr as usize;
-            let end = start + len as usize;
-            let bytes = &data[start..end];
-            eprint!("{}", String::from_utf8_lossy(bytes));
+            if let Some(memory) = caller.data().memory {
+                let data = memory.data(&caller);
+                let start = ptr as usize;
+                let end = start + len as usize;
+                let bytes = &data[start..end];
+                eprint!("{}", String::from_utf8_lossy(bytes));
+            }
         },
     )?;
 
@@ -53,7 +60,7 @@ fn main() -> Result<()> {
         "env",
         "mc_stdin_read",
         |_caller: wasmtime::Caller<'_, HostState>, _buf: i32, _len: i32| -> i32 {
-            0 // No input yet
+            0 // No blocking stdin read
         },
     )?;
 
@@ -72,13 +79,14 @@ fn main() -> Result<()> {
         "env",
         "mc_random",
         |mut caller: wasmtime::Caller<'_, HostState>, ptr: i32, len: i32| {
-            let memory = caller.get_export("memory").unwrap().into_memory().unwrap();
-            let data = memory.data_mut(&mut caller);
-            let start = ptr as usize;
-            let end = start + len as usize;
-            let buf = &mut data[start..end];
-            for byte in buf.iter_mut() {
-                *byte = rand::random();
+            if let Some(memory) = caller.data_mut().memory {
+                let data = memory.data_mut(&mut caller);
+                let start = ptr as usize;
+                let end = start + len as usize;
+                let buf = &mut data[start..end];
+                for byte in buf.iter_mut() {
+                    *byte = rand::random();
+                }
             }
         },
     )?;
@@ -157,37 +165,84 @@ fn main() -> Result<()> {
         "env",
         "mc_log",
         |mut caller: wasmtime::Caller<'_, HostState>, level: i32, ptr: i32, len: i32| {
-            let memory = caller.get_export("memory").unwrap().into_memory().unwrap();
-            let data = memory.data(&caller);
-            let start = ptr as usize;
-            let end = start + len as usize;
-            let msg = String::from_utf8_lossy(&data[start..end]);
-            match level {
-                0 => println!("[DEBUG] {}", msg),
-                1 => println!("[INFO] {}", msg),
-                2 => println!("[WARN] {}", msg),
-                3 => eprintln!("[ERROR] {}", msg),
-                _ => println!("[LOG] {}", msg),
+            if let Some(memory) = caller.data().memory {
+                let data = memory.data(&caller);
+                let start = ptr as usize;
+                let end = start + len as usize;
+                let msg = String::from_utf8_lossy(&data[start..end]);
+                match level {
+                    0 => println!("[DEBUG] {}", msg),
+                    1 => println!("[INFO] {}", msg),
+                    2 => println!("[WARN] {}", msg),
+                    3 => eprintln!("[ERROR] {}", msg),
+                    _ => println!("[LOG] {}", msg),
+                }
             }
         },
     )?;
 
-    let mut store = Store::new(&engine, HostState);
+    let mut store = Store::new(&engine, HostState { memory: None });
 
     let module = Module::new(&engine, &wasm_bytes)?;
     let instance = linker.instantiate(&mut store, &module)?;
+
+    // Get memory export
+    let memory = instance
+        .get_export(&mut store, "memory")
+        .unwrap()
+        .into_memory()
+        .unwrap();
+    store.data_mut().memory = Some(memory);
 
     // Call mc_init()
     let mc_init = instance.get_typed_func::<(), i32>(&mut store, "mc_init")?;
     let _init_result = mc_init.call(&mut store, ())?;
 
-    // Loop calling mc_tick()
+    // Setup terminal
+    let terminal = Terminal::new()?;
+    let mc_input = instance.get_typed_func::<(i32, i32), ()>(&mut store, "mc_input")?;
     let mc_tick = instance.get_typed_func::<(), i32>(&mut store, "mc_tick")?;
+
+    // Main loop: poll terminal and tick
     loop {
+        // Check for keyboard input
+        if let Ok(Some(key)) = terminal.read_key() {
+            match key.code {
+                crossterm::event::KeyCode::Char('c')
+                    if key
+                        .modifiers
+                        .contains(crossterm::event::KeyModifiers::CONTROL) =>
+                {
+                    break; // Ctrl+C to exit
+                }
+                _ => {
+                    // Convert key to bytes and send to kernel
+                    let byte = match key.code {
+                        crossterm::event::KeyCode::Char(c) => c as u8,
+                        crossterm::event::KeyCode::Enter => b'\n',
+                        crossterm::event::KeyCode::Backspace => 0x08,
+                        _ => 0,
+                    };
+                    if byte != 0 {
+                        if let Some(memory) = store.data().memory {
+                            let input_buf_addr = 0x1000;
+                            let data = memory.data_mut(&mut store);
+                            data[input_buf_addr] = byte;
+                            mc_input.call(&mut store, (input_buf_addr as i32, 1))?;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Tick the kernel
         let result = mc_tick.call(&mut store, ())?;
         if result != 1 {
             break;
         }
+
+        // Small delay to prevent spinning too fast
+        std::thread::sleep(std::time::Duration::from_millis(5));
     }
 
     Ok(())
