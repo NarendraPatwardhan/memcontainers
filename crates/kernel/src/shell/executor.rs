@@ -47,7 +47,7 @@ impl Executor {
             let exit_code = builtin(&mut ctx);
             (exit_code, output)
         } else {
-            (1, alloc::format!("{}: command not found\n", cmd.cmd))
+            (1, alloc::format!("{}: command not found\r\n", cmd.cmd))
         }
     }
 }

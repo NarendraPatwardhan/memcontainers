@@ -87,7 +87,7 @@ static mut INITIALIZED: bool = false;
 
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
-    let msg = alloc::format!("kernel panic: {}\n", info.message());
+    let msg = alloc::format!("kernel panic: {}\r\n", info.message());
     unsafe {
         bridge::mc_stderr_write(msg.as_ptr(), msg.len());
         core::arch::wasm32::unreachable();
@@ -147,7 +147,7 @@ fn init_system() {
 #[unsafe(no_mangle)]
 pub extern "C" fn mc_init() -> i32 {
     unsafe {
-        let msg = "memcontainers v0.1.0 booting...\nMounting root filesystem... ok\nCreating default directories... ok\n";
+        let msg = "memcontainers v0.1.0 booting...\r\nMounting root filesystem... ok\r\nCreating default directories... ok\r\n";
         bridge::mc_stdout_write(msg.as_ptr(), msg.len());
 
         init_system();
@@ -231,7 +231,7 @@ pub extern "C" fn mc_tick() -> i32 {
                                 }
                                 Err(_) => {
                                     let err =
-                                        alloc::format!("{}: cannot redirect\n", redirect_path);
+                                        alloc::format!("{}: cannot redirect\r\n", redirect_path);
                                     bridge::mc_stderr_write(err.as_ptr(), err.len());
                                 }
                             }

@@ -12,7 +12,7 @@ use crate::vfs::OpenFlags;
 pub fn echo(ctx: &mut BuiltinContext) -> i32 {
     let output = ctx.args.join(" ");
     ctx.output.push_str(&output);
-    ctx.output.push('\n');
+    ctx.output.push_str("\r\n");
     0
 }
 
@@ -44,7 +44,7 @@ pub fn head(ctx: &mut BuiltinContext) -> i32 {
                 let to_show = n.min(lines.len());
                 for line in &lines[..to_show] {
                     ctx.output.push_str(line);
-                    ctx.output.push('\n');
+                    ctx.output.push_str("\r\n");
                 }
                 0
             }
@@ -92,7 +92,7 @@ pub fn tail(ctx: &mut BuiltinContext) -> i32 {
                 let start = if lines.len() > n { lines.len() - n } else { 0 };
                 for line in &lines[start..] {
                     ctx.output.push_str(line);
-                    ctx.output.push('\n');
+                    ctx.output.push_str("\r\n");
                 }
                 0
             }
