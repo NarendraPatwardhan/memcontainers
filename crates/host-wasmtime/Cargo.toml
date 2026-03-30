@@ -1,0 +1,12 @@
+[package]
+name = "host-wasmtime"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "host-wasmtime"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0.102"
+wasmtime = "43.0.0"
